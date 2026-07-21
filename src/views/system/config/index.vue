@@ -75,14 +75,10 @@
           <el-table :data="configList" :border="false">
             <el-table-column label="参数名称" prop="configName" min-width="160" />
             <el-table-column label="参数键名" prop="configKey" min-width="160" />
-            <el-table-column label="参数键值" min-width="160">
+            <el-table-column label="参数键值" prop="configValue" min-width="160" show-overflow-tooltip />
+            <el-table-column label="字段类型" prop="configField" min-width="100">
               <template #default="{ row }">
-                <el-input
-                  v-model="row.configValue"
-                  placeholder="请输入参数键值"
-                  @blur="handleInlineSave(row)"
-                  @keyup.enter="handleInlineSave(row)"
-                />
+                {{ CONFIG_FIELD_TYPES[row.configField] || row.configField || '-' }}
               </template>
             </el-table-column>
             <el-table-column label="备注" prop="remark" min-width="180" show-overflow-tooltip>
@@ -133,8 +129,49 @@
         <el-form-item label="参数键名" prop="configKey">
           <el-input v-model="form.configKey" placeholder="请输入参数键名" />
         </el-form-item>
+        <el-form-item label="字段类型" prop="configField">
+          <el-select v-model="form.configField" placeholder="请选择字段类型" @change="handleFieldTypeChange">
+            <el-option
+              v-for="(label, value) in CONFIG_FIELD_TYPES"
+              :key="value"
+              :label="label"
+              :value="value"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="参数键值" prop="configValue">
-          <el-input v-model="form.configValue" type="textarea" placeholder="请输入参数键值" />
+          <!-- string -->
+          <el-input
+            v-if="form.configField === 'string'"
+            v-model="form.configValue"
+            placeholder="请输入参数键值"
+          />
+          <!-- int / long -->
+          <el-input
+            v-else-if="form.configField === 'int' || form.configField === 'long'"
+            v-model="form.configValue"
+            placeholder="请输入整数"
+            @input="onIntegerInput"
+          />
+          <!-- float / double -->
+          <el-input
+            v-else-if="form.configField === 'float' || form.configField === 'double'"
+            v-model="form.configValue"
+            placeholder="请输入数字"
+            @input="onDecimalInput"
+          />
+          <!-- boolean -->
+          <el-radio-group v-else-if="form.configField === 'boolean'" v-model="form.configValue">
+            <el-radio value="true">true</el-radio>
+            <el-radio value="false">false</el-radio>
+          </el-radio-group>
+          <!-- jsonObject / jsonList -->
+          <el-input
+            v-else
+            v-model="form.configValue"
+            type="textarea"
+            :placeholder="form.configField === 'jsonObject' ? '请输入 JSON 对象' : '请输入 JSON 数组'"
+          />
         </el-form-item>
         <el-form-item label="系统内置" prop="configType">
           <el-radio-group v-model="form.configType">
@@ -156,8 +193,8 @@
 </template>
 
 <script setup name="Config" lang="ts">
-import { listConfig, getConfig, delConfig, addConfig, updateConfig, updateConfigByKey, refreshCache } from '@/api/system/config';
-import { ConfigForm, ConfigQuery, ConfigVO } from '@/api/system/config/types';
+import { listConfig, getConfig, delConfig, addConfig, updateConfig, refreshCache } from '@/api/system/config';
+import { ConfigForm, ConfigQuery, ConfigVO, CONFIG_FIELD_TYPES } from '@/api/system/config/types';
 import { useLoading } from '@/hooks/async/useLoading';
 import { useFormDialog } from '@/hooks/dialog/useFormDialog';
 import { useSearchReset } from '@/hooks/form/useSearchReset';
@@ -181,9 +218,50 @@ const initFormData: ConfigForm = {
   configName: '',
   configKey: '',
   configValue: '',
+  configField: 'string',
   configType: 'Y',
   remark: ''
 };
+/** 根据 configField 类型验证 configValue（表单校验器） */
+function validateConfigValue(_rule: any, value: string, callback: any) {
+  if (!value) {
+    return callback(new Error('参数键值不能为空'));
+  }
+  const fieldType = form.value.configField;
+  if (!fieldType || fieldType === 'string') return callback();
+
+  switch (fieldType) {
+    case 'int':
+    case 'long':
+      if (!/^-?\d+$/.test(value)) return callback(new Error('请输入有效的整数'));
+      break;
+    case 'float':
+    case 'double':
+      if (!/^-?\d+(\.\d+)?$/.test(value)) return callback(new Error('请输入有效的数字'));
+      break;
+    case 'boolean':
+      if (!['true', 'false'].includes(value.toLowerCase())) return callback(new Error('请输入 true 或 false'));
+      break;
+    case 'jsonObject':
+      try {
+        const parsed = JSON.parse(value);
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return callback(new Error('请输入有效的 JSON 对象'));
+      } catch {
+        return callback(new Error('请输入有效的 JSON 对象格式'));
+      }
+      break;
+    case 'jsonList':
+      try {
+        const parsed = JSON.parse(value);
+        if (!Array.isArray(parsed)) return callback(new Error('请输入有效的 JSON 数组'));
+      } catch {
+        return callback(new Error('请输入有效的 JSON 数组格式'));
+      }
+      break;
+  }
+  callback();
+}
+
 const data = reactive<PageData<ConfigForm, ConfigQuery>>({
   form: { ...initFormData },
   queryParams: {
@@ -196,11 +274,12 @@ const data = reactive<PageData<ConfigForm, ConfigQuery>>({
   rules: {
     configName: [{ required: true, message: '参数名称不能为空', trigger: 'blur' }],
     configKey: [{ required: true, message: '参数键名不能为空', trigger: 'blur' }],
-    configValue: [{ required: true, message: '参数键值不能为空', trigger: 'blur' }]
+    configValue: [{ required: true, validator: validateConfigValue, trigger: 'blur' }]
   }
 });
 
 const { queryParams, form, rules } = toRefs(data);
+
 const { dialog, resetForm, openDialog, showDialog, closeDialog } = useFormDialog({
   form,
   formRef: configFormRef,
@@ -228,6 +307,37 @@ const cancel = () => {
   closeDialog();
   resetForm();
 };
+/** 字段类型变更时清空键值 */
+const handleFieldTypeChange = () => {
+  form.value.configValue = '';
+};
+/** 限制只能输入整数 */
+const onIntegerInput = (val: string | number) => {
+  let s = String(val);
+  // 只保留数字和负号
+  s = s.replace(/[^\d-]/g, '');
+  // 负号仅允许出现在开头
+  const firstMinus = s.indexOf('-');
+  if (firstMinus > 0) s = s.replace(/-/g, '');
+  // 只保留一个开头的负号
+  if (s.startsWith('-')) s = '-' + s.slice(1).replace(/-/g, '');
+  form.value.configValue = s;
+};
+/** 限制只能输入数字（含小数） */
+const onDecimalInput = (val: string | number) => {
+  let s = String(val);
+  // 只保留数字、负号和小数点
+  s = s.replace(/[^\d.-]/g, '');
+  // 只保留第一个负号（且在开头）
+  const firstMinus = s.indexOf('-');
+  if (firstMinus > 0) s = s.replace(/-/g, '');
+  // 只保留第一个小数点
+  const firstDot = s.indexOf('.');
+  if (firstDot !== -1) {
+    s = s.slice(0, firstDot + 1) + s.slice(firstDot + 1).replace(/\./g, '');
+  }
+  form.value.configValue = s;
+};
 /** 搜索按钮操作 */
 const handleQuery = () => {
   queryParams.value.pageNum = 1;
@@ -250,15 +360,6 @@ const handleUpdate = async (row?: Partial<ConfigVO>) => {
   const res = await getConfig(configId!);
   Object.assign(form.value, res.data);
   showDialog('修改参数');
-};
-/** 内联保存参数值 */
-const handleInlineSave = async (row: Partial<ConfigVO>) => {
-  if (!row.configKey) {
-    return;
-  }
-  await modal.confirm('确认要保存对参数"' + row.configKey + '"的修改吗？');
-  await updateConfigByKey(row.configKey, row.configValue ?? '');
-  modal.msgSuccess('修改成功');
 };
 /** 提交按钮 */
 const submitForm = () => {
